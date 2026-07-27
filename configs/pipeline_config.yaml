@@ -1,0 +1,16 @@
+# Swap any of these to reproduce ablations from experiments/
+retrieval:
+  embedding_model: BAAI/bge-small-en-v1.5   # BGE-M3 tested, rejected: 17x size for +1.7pp
+  representation: page_plus_header           # winner over plain page-level (58.3% vs 50.0% hit@5)
+  top_k: 10                                   # 5 tested first; 10 fixes several retrieval-gap failures
+  use_reranker: false                         # tested 3 ways, always hurt accuracy -- see reranker.py docstring
+  page_offset: 1                              # FinanceBench evidence pages are 0-indexed, pdfplumber is 1-indexed
+
+generation:
+  model: gpt-4o-mini
+  prompt_version: v5_fewshot                  # see src/generation/prompts.py for v2-v5 history
+  temperature: 0
+  use_calculator: true                        # delegate arithmetic to Python eval(), not LLM mental math
+
+evaluation:
+  question_types: [domain-relevant, metrics-generated, novel-generated]

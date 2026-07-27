@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+data/raw_pdfs/*.pdf
+data/parsed_cache/*.pkl
+*.faiss
+.ipynb_checkpoints/
