@@ -21,8 +21,10 @@ async def lifespan(app: FastAPI):
     print(f"Loading index bundle from {INDEX_STORE_DIR} ...")
     index, pages, company_lookup = load_index_bundle(INDEX_STORE_DIR)
 
-    print("Loading embedder (BGE-small) ...")
-    embed_model = load_embedder()
+
+    embed_device = os.environ.get("EMBEDDER_DEVICE", "cpu")
+    print(f"Loading embedder (BGE-small, device={embed_device}) ...")
+    embed_model = load_embedder(device=embed_device)
 
     page_text_lookup_by_doc = {}
     for p in pages:
