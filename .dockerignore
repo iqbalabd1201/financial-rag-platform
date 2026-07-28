@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.env
+.git/
+.gitignore
+data/raw_pdfs/
+data/parsed_cache/
+experiments/
+results/
+docs/
+README.md
+*.log
