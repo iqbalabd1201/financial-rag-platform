@@ -5,3 +5,5 @@ data/raw_pdfs/*.pdf
 data/parsed_cache/*.pkl
 *.faiss
 .ipynb_checkpoints/
+uvicorn.log
+*.log
