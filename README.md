@@ -5,6 +5,23 @@ on [FinanceBench](https://github.com/patronus-ai/financebench). This project doc
 experimental cycle — baselines, failed methods, root-cause diagnosis, and a final configuration
 chosen on accuracy **and** cost, not accuracy alone.
 
+## Live demo
+
+The full pipeline is deployed as a REST API:
+**https://financial-rag-platform-production.up.railway.app**
+
+```bash
+curl https://financial-rag-platform-production.up.railway.app/health
+
+curl -X POST https://financial-rag-platform-production.up.railway.app/query \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What was 3M'"'"'s FY2018 capital expenditure?"}'
+```
+
+Runs on Railway's free tier (CPU-only) — the container may take 30–60s to wake up on the
+first request after a period of inactivity. Built with FastAPI, containerized with Docker;
+see `src/api/` and `Dockerfile`.
+
 ## Why this project
 
 Most public RAG demos report a single headline accuracy number. This one instead asks: *what's
@@ -105,29 +122,38 @@ Query
 Answer + cited pages
 ```
 
+Served in production behind a FastAPI wrapper (`POST /query`, `GET /health`), containerized
+with Docker, with the index bundle pre-built and loaded once at startup rather than rebuilt
+per request — see `src/api/main.py` and `src/indexing/persistence.py`.
+
 ## Repository structure
 
 ```
 financial-rag-platform/
 ├── README.md
 ├── requirements.txt
+├── Dockerfile
+├── .dockerignore
 ├── configs/
 │   └── pipeline_config.yaml        # k, model names, prompt version — swappable
 │
 ├── data/
 │   ├── raw_pdfs/                   # sample filings (gitignored in full)
 │   ├── parsed_cache/               # cached page-parse output
-│   └── qa_gold/                    # FinanceBench subset used, with evidence
+│   ├── qa_gold/                    # FinanceBench subset used, with evidence
+│   └── index_store/                # pre-built FAISS index + metadata, loaded by the API
 │
 ├── src/
 │   ├── ingestion/
+│   │   ├── download_corpus.py      # clone FinanceBench, copy the PDFs this eval uses
 │   │   ├── parse_pdf.py            # pdfplumber + page-offset handling
 │   │   └── clean_text.py           # header stripping, section-title extraction
 │   │
 │   ├── indexing/
 │   │   ├── chunker.py              # chunk-based vs page-level (both, for comparison)
 │   │   ├── embedder.py             # BGE-small / BGE-M3, swappable via config
-│   │   └── build_index.py          # FAISS index builder
+│   │   ├── build_index.py          # FAISS index builder
+│   │   └── persistence.py          # save/load the index bundle as one unit (for API serving)
 │   │
 │   ├── retrieval/
 │   │   ├── doc_matcher.py          # Stage 1: string/alias/year matching
@@ -138,10 +164,19 @@ financial-rag-platform/
 │   │   ├── prompts.py              # v2–v5 prompt history, not just the final one
 │   │   └── generate_answer.py      # + Python-eval calculator step
 │   │
-│   └── evaluation/
-│       ├── retrieval_metrics.py    # hit@k, recall@k, candidate-ceiling analysis
-│       ├── answer_metrics.py       # numeric tolerance match + LLM-judge (bug-fixed)
-│       └── run_eval.py
+│   ├── evaluation/
+│   │   ├── retrieval_metrics.py    # hit@k, recall@k, candidate-ceiling analysis
+│   │   ├── answer_metrics.py       # numeric tolerance match + LLM-judge (bug-fixed)
+│   │   └── run_eval.py
+│   │
+│   └── api/
+│       ├── main.py                 # FastAPI app: POST /query, GET /health
+│       └── schemas.py              # Pydantic request/response contracts
+│
+├── scripts/
+│   ├── reproduce_from_scratch.py   # free, deterministic retrieval reproducibility check
+│   ├── reproduce_generation.py     # optional, costs ~$0.05-0.10 in OpenAI credit
+│   └── build_and_save_index.py     # one-time: build + persist the index bundle for the API
 │
 ├── experiments/                     # notebooks, one per major finding
 │   ├── 01_offset_bug_discovery.ipynb
@@ -170,3 +205,6 @@ financial-rag-platform/
 - A few FinanceBench gold answers themselves contain minor inconsistencies (documented during
   development, e.g. a rounding mismatch on one balance-sheet figure) — consistent with data
   quality caveats raised in prior published work on this benchmark.
+- The live demo API does not fall back to a gold document name when Stage 1 document matching
+  fails (unlike the evaluation scripts, which have ground truth to fall back to) — a genuine
+  "couldn't identify the filing" returns an HTTP 422 with guidance, rather than guessing.
