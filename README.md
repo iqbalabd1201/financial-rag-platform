@@ -19,8 +19,10 @@ curl -X POST https://financial-rag-platform-production.up.railway.app/query \
 ```
 
 Runs on Railway's free tier (CPU-only) — the container may take 30–60s to wake up on the
-first request after a period of inactivity. Built with FastAPI, containerized with Docker;
-see `src/api/` and `Dockerfile`.
+first request after a period of inactivity. Built with FastAPI, containerized with Docker,
+retrieval served from Qdrant Cloud; see `src/api/`, `src/indexing/qdrant_store.py`, and
+`Dockerfile`. 28 tests (unit + API integration + a retrieval-regression gate) run on every
+push via GitHub Actions — see [Testing & CI](#testing--ci).
 
 ## Why this project
 
@@ -122,9 +124,29 @@ Query
 Answer + cited pages
 ```
 
-Served in production behind a FastAPI wrapper (`POST /query`, `GET /health`), containerized
-with Docker, with the index bundle pre-built and loaded once at startup rather than rebuilt
-per request — see `src/api/main.py` and `src/indexing/persistence.py`.
+Served in production behind a FastAPI wrapper (`POST /query`, `GET /health`, `GET /metrics`),
+containerized with Docker. Retrieval runs against Qdrant Cloud (migrated from local FAISS;
+verified identical hit@5/recall@5 before switching over — see `src/indexing/qdrant_store.py`).
+Every request logs structured JSON (query, matched doc, per-stage latency, token cost) to
+stdout, and `/metrics` exposes aggregate stats — see `src/api/observability.py`.
+
+## Testing & CI
+
+28 tests, split by what they actually verify rather than by file:
+
+| Layer | What it checks |
+|---|---|
+| `tests/test_doc_matcher.py` | Stage 1 string/alias/year-disambiguation matching, plus the fallback_needed case |
+| `tests/test_calculator.py` | The CALC-line extraction/eval step, with a fake OpenAI client (no cost, no network) |
+| `tests/test_retrieval_metrics.py` | hit@k / recall@k / candidate_ceiling — the functions the headline README numbers depend on |
+| `tests/test_parse_pdf.py` | `clean_page()`, plus a regression guard asserting `PAGE_OFFSET == 1` (a discovered fact, not a default, per the offset-bug story above) |
+| `tests/test_api.py` | `POST /query`, `GET /health`, `GET /metrics` end-to-end via FastAPI's TestClient, with Qdrant/OpenAI/embedder mocked |
+| `tests/test_retrieval_regression.py` | Hit@5 on a 15-question subset must not collapse — using the **committed local FAISS bundle**, not live Qdrant, so this stays free and dependency-free in CI |
+
+GitHub Actions (`.github/workflows/ci.yml`) runs the full suite on every push, then verifies
+the `Dockerfile` still builds. Actual deployment stays on Railway's own GitHub integration
+rather than being duplicated in CI — this workflow's job is to catch a broken commit before
+Railway does, not to redeploy.
 
 ## Repository structure
 
@@ -132,8 +154,14 @@ per request — see `src/api/main.py` and `src/indexing/persistence.py`.
 financial-rag-platform/
 ├── README.md
 ├── requirements.txt
+├── requirements-dev.txt            # pytest, httpx -- test-only, kept separate from runtime deps
+├── pytest.ini
 ├── Dockerfile
 ├── .dockerignore
+├── .github/
+│   └── workflows/
+│       └── ci.yml                  # push -> pytest -> verify Dockerfile builds
+│
 ├── configs/
 │   └── pipeline_config.yaml        # k, model names, prompt version — swappable
 │
@@ -141,7 +169,7 @@ financial-rag-platform/
 │   ├── raw_pdfs/                   # sample filings (gitignored in full)
 │   ├── parsed_cache/               # cached page-parse output
 │   ├── qa_gold/                    # FinanceBench subset used, with evidence
-│   └── index_store/                # pre-built FAISS index + metadata, loaded by the API
+│   └── index_store/                # pre-built FAISS index + metadata (local reproducibility only)
 │
 ├── src/
 │   ├── ingestion/
@@ -152,17 +180,18 @@ financial-rag-platform/
 │   ├── indexing/
 │   │   ├── chunker.py              # chunk-based vs page-level (both, for comparison)
 │   │   ├── embedder.py             # BGE-small / BGE-M3, swappable via config
-│   │   ├── build_index.py          # FAISS index builder
-│   │   └── persistence.py          # save/load the index bundle as one unit (for API serving)
+│   │   ├── build_index.py          # FAISS index builder (local/reproducibility path)
+│   │   ├── persistence.py          # save/load the local FAISS bundle as one unit
+│   │   └── qdrant_store.py         # production vector store: connect, upsert, filtered search
 │   │
 │   ├── retrieval/
 │   │   ├── doc_matcher.py          # Stage 1: string/alias/year matching
-│   │   ├── retriever.py            # Stage 2: dense retrieval + page-header index
+│   │   ├── retriever.py            # Stage 2: local FAISS retrieval (used by reproduce_from_scratch.py)
 │   │   └── reranker.py             # kept, DISABLED by default — see docstring for why
 │   │
 │   ├── generation/
 │   │   ├── prompts.py              # v2–v5 prompt history, not just the final one
-│   │   └── generate_answer.py      # + Python-eval calculator step
+│   │   └── generate_answer.py      # + Python-eval calculator step, optional token-usage capture
 │   │
 │   ├── evaluation/
 │   │   ├── retrieval_metrics.py    # hit@k, recall@k, candidate-ceiling analysis
@@ -170,13 +199,25 @@ financial-rag-platform/
 │   │   └── run_eval.py
 │   │
 │   └── api/
-│       ├── main.py                 # FastAPI app: POST /query, GET /health
-│       └── schemas.py              # Pydantic request/response contracts
+│       ├── main.py                 # FastAPI app: POST /query, GET /health, GET /metrics
+│       ├── schemas.py              # Pydantic request/response contracts
+│       └── observability.py        # structured logging + in-memory metrics aggregation
 │
 ├── scripts/
 │   ├── reproduce_from_scratch.py   # free, deterministic retrieval reproducibility check
 │   ├── reproduce_generation.py     # optional, costs ~$0.05-0.10 in OpenAI credit
-│   └── build_and_save_index.py     # one-time: build + persist the index bundle for the API
+│   ├── build_and_save_index.py     # one-time: build + persist the local FAISS bundle
+│   ├── migrate_index_to_qdrant.py  # one-time: upload the FAISS bundle's vectors to Qdrant Cloud
+│   └── verify_qdrant_migration.py  # confirms hit@5/recall@5 unchanged after migration
+│
+├── tests/                           # 28 tests — see Testing & CI below
+│   ├── conftest.py
+│   ├── test_doc_matcher.py
+│   ├── test_calculator.py
+│   ├── test_retrieval_metrics.py
+│   ├── test_parse_pdf.py
+│   ├── test_api.py
+│   └── test_retrieval_regression.py
 │
 ├── experiments/                     # notebooks, one per major finding
 │   ├── 01_offset_bug_discovery.ipynb
