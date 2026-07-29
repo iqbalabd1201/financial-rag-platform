@@ -6,3 +6,4 @@ numpy
 openai
 fastapi
 uvicorn[standard]
+qdrant-client
