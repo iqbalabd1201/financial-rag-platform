@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install -r requirements-dev.txt
+
+      - name: Run unit + integration tests
+        run: pytest tests/ -v --ignore=tests/test_retrieval_regression.py
+
+      - name: Run retrieval regression gate
+        run: pytest tests/test_retrieval_regression.py -v
+
+  docker-build-check:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Verify Dockerfile builds
+        run: docker build -t financial-rag-api:ci-check .
+        # Build-only gate -- actual deployment is handled by Railway's own
+        # GitHub integration (configured separately, not duplicated here).
+        # This job's only purpose is to catch a broken Dockerfile before
+        # Railway does, on every push/PR.
