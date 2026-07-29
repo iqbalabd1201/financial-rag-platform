@@ -69,6 +69,32 @@ published papers (HiREC, T2-RAGBench) that report the same failure on similar da
 The oracle ceiling is **not** 100% — a meaningful share of failures are LLM reasoning/arithmetic
 errors that persist even with perfect retrieval, not retrieval failures.
 
+## Cross-validation against Ragas
+
+The custom floor/pipeline/ceiling ablation above uses this project's own metric
+vocabulary. To make the results legible to anyone unfamiliar with that setup, the
+final pipeline was also scored with [Ragas](https://github.com/explodinggradients/ragas),
+the standard open-source RAG evaluation framework, on a 30-question subset:
+
+| Ragas metric | Score | What it measures |
+|---|---|---|
+| Faithfulness | **76.6%** | Are the claims in the answer supported by the retrieved context? |
+| Answer relevancy | **68.8%** | Is the answer actually on-topic for the question asked? |
+| Context precision | **55.6%** | Of the retrieved pages, how many were relevant? |
+| Context recall | **41.4%** | Of what's needed to answer, how much did retrieval surface? |
+
+Context precision/recall are **lower** than this project's own hit@5/recall@5
+(58.3%/55.0%) — expected, since Ragas scores context relevance via LLM judgment
+per-page rather than exact page-ID matching against gold evidence. The two
+methodologies disagree on the exact number but agree on the direction: retrieval
+is the bigger bottleneck than generation, consistent with the oracle-ceiling gap
+(58.3% actual vs a much higher in-candidate ceiling) documented above.
+
+Faithfulness (76.6%) landing well above context precision (55.6%) is a useful
+signal on its own: the model is largely *not* hallucinating beyond what it's
+given — most of the accuracy ceiling is a retrieval problem, not a generation
+one. See `scripts/run_ragas_eval.py`.
+
 ## What didn't work (and why that's useful to know)
 
 - **Cross-encoder reranking** — consistently made retrieval worse, at every candidate depth
@@ -155,6 +181,7 @@ financial-rag-platform/
 ├── README.md
 ├── requirements.txt
 ├── requirements-dev.txt            # pytest, httpx -- test-only, kept separate from runtime deps
+├── requirements-eval.txt           # ragas, datasets -- offline eval only, kept out of the Docker image
 ├── pytest.ini
 ├── Dockerfile
 ├── .dockerignore
