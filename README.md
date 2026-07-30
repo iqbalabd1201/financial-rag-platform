@@ -116,6 +116,34 @@ one. See `scripts/run_ragas_eval.py`.
   financial-analyst-facing tool, a confidently wrong answer is a worse failure mode than an
   honest "I don't know," even at equal accuracy.
 
+## Reranker fine-tuning attempt (PEFT/LoRA)
+
+Rather than leave the reranker failure above as a closed question, the same
+`bge-reranker-base` model was fine-tuned with LoRA on domain-specific pairs
+(gold evidence pages as positives, top-30 retrieved-but-wrong pages as hard
+negatives — see `scripts/build_reranker_training_data_kfold.py` and
+`scripts/finetune_reranker_lora.py`), to test whether the failure was fixable
+rather than fundamental to the model.
+
+Evaluated with proper 4-fold cross-validation — every one of the 60 gold
+questions was held out from training exactly once, so this is a full
+60-question comparison with **zero train/test leakage**, not a small,
+noisy sample (`scripts/evaluate_finetuned_reranker_kfold.py`):
+
+| Condition | Hit@5 | Recall@5 |
+|---|---|---|
+| **No reranking** | **58.3%** | 55.0% |
+| Off-the-shelf bge-reranker-base | 51.7% | 47.5% |
+| **Fine-tuned (LoRA)** | 55.0% | 53.3% |
+
+Honest read: fine-tuning **meaningfully reduced the damage** the reranker
+causes (51.7% → 55.0%) but did **not** close the gap to simply not
+reranking at all (58.3%). The production recommendation is unchanged —
+reranking stays disabled — but this is a materially better result than the
+off-the-shelf model, achieved by training only a ~20MB LoRA adapter (not a
+new full model) on 276 pairs derived from 45 questions per fold. Treated
+here as a partial-improvement result, not oversold as a clean win.
+
 ## Prompt iteration log (generation stage)
 
 Four iterations, each isolating a specific failure mode rather than blindly re-prompting:
@@ -260,7 +288,13 @@ financial-rag-platform/
 │   ├── migrate_index_to_qdrant.py  # one-time: upload the FAISS bundle's vectors to Qdrant Cloud
 │   ├── verify_qdrant_migration.py  # confirms hit@5/recall@5 unchanged after migration
 │   ├── run_ragas_eval.py           # cross-validate against Ragas (faithfulness, context precision/recall)
-│   └── track_generation_prompts_wandb.py  # log v2-v5 prompt comparison to Weights & Biases
+│   ├── track_generation_prompts_wandb.py  # log v2-v5 prompt comparison to Weights & Biases
+│   ├── build_reranker_training_data_kfold.py  # build 4-fold LoRA training pairs (hard negatives)
+│   ├── finetune_reranker_lora.py    # LoRA fine-tune of bge-reranker-base (needs GPU -- run in Colab)
+│   └── evaluate_finetuned_reranker_kfold.py  # 4-fold CV comparison: no-rerank vs off-the-shelf vs fine-tuned
+│
+├── models/
+│   └── reranker_lora_adapter_fold{0-3}/  # small (~20MB each) LoRA adapters, one per CV fold
 │
 ├── tests/                           # 28 tests — see Testing & CI below
 │   ├── conftest.py
