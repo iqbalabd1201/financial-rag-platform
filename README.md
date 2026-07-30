@@ -132,6 +132,29 @@ Four iterations, each isolating a specific failure mode rather than blindly re-p
    targeted cases; one persisted because its root cause was a sign-extraction error, not the
    comparison logic the example addressed — a reminder that the fix must match the diagnosis.
 
+### Tracked in Weights & Biases
+
+The original per-version numbers from initial development weren't preserved in a
+structured form, so the four prompt versions were re-run fresh on a 30-question
+subset (same subset used for the Ragas evaluation) with results logged to W&B —
+[project dashboard](https://wandb.ai/iqbalabd1201-binus-university/financial-rag-prompt-iteration):
+
+| Version | Accuracy | Confident-wrong count |
+|---|---|---|
+| v2 | 60.0% | 12 |
+| v3 | 56.7% | 13 |
+| v4 | 63.3% | 10 |
+| **v5 (final)** | **53.3%** | **4** |
+
+This fresh run's absolute numbers differ from the original development session
+(different subset size, natural LLM variance) — treat this table as an independent
+reproduction of the trade-off, not a re-statement of the original numbers. The
+**trade-off itself replicates cleanly**: v5 has the lowest raw accuracy of the four
+but by far the lowest confident-wrong count, confirming it was the right choice for
+a tool where a confidently wrong answer is worse than an honest "not found," even
+at equal accuracy. "Confident-wrong" here is a keyword-based heuristic (see
+`scripts/track_generation_prompts_wandb.py`), not a hand-labeled ground truth.
+
 ## Architecture
 
 ```
@@ -235,7 +258,9 @@ financial-rag-platform/
 │   ├── reproduce_generation.py     # optional, costs ~$0.05-0.10 in OpenAI credit
 │   ├── build_and_save_index.py     # one-time: build + persist the local FAISS bundle
 │   ├── migrate_index_to_qdrant.py  # one-time: upload the FAISS bundle's vectors to Qdrant Cloud
-│   └── verify_qdrant_migration.py  # confirms hit@5/recall@5 unchanged after migration
+│   ├── verify_qdrant_migration.py  # confirms hit@5/recall@5 unchanged after migration
+│   ├── run_ragas_eval.py           # cross-validate against Ragas (faithfulness, context precision/recall)
+│   └── track_generation_prompts_wandb.py  # log v2-v5 prompt comparison to Weights & Biases
 │
 ├── tests/                           # 28 tests — see Testing & CI below
 │   ├── conftest.py
