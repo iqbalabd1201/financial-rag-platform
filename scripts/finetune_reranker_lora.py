@@ -1,23 +1,7 @@
-"""Fine-tune bge-reranker-base with PEFT/LoRA on domain-specific pairs.
-
-This is the SAME base model that failed off-the-shelf (36.6% hit@5 after
-reranking, vs 58.3% without -- see src/retrieval/reranker.py's docstring
-and docs/failure_analysis.md). The goal isn't to replace it with a bigger
-model; it's to teach this specific model the domain's relevance patterns
-(tables of raw figures, not narrative prose) via LoRA, using the hard
-negatives built by build_reranker_training_data.py.
-
-Saves ONLY the LoRA adapter (a few MB), not a merged model (~1GB+) -- the
-adapter is loaded on top of the base model at inference time. See
-src/retrieval/reranker.py's load_finetuned_reranker() for how it's used.
-
-Needs a GPU. Run in Colab:
-    !pip install -q peft transformers accelerate
-    !python scripts/finetune_reranker_lora.py
-"""
 import sys
 import os
 import json
+import argparse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -27,11 +11,8 @@ from transformers import AutoTokenizer, AutoModelForSequenceClassification, get_
 from peft import LoraConfig, get_peft_model, TaskType
 
 BASE_MODEL = "BAAI/bge-reranker-base"
-TRAIN_PAIRS_PATH = "data/qa_gold/reranker_train_pairs.jsonl"
-ADAPTER_OUT_DIR = "models/reranker_lora_adapter"
 MAX_LENGTH = 512
 BATCH_SIZE = 8
-EPOCHS = 8
 LEARNING_RATE = 2e-4
 LORA_R = 8
 LORA_ALPHA = 16
@@ -59,7 +40,7 @@ class PairDataset(Dataset):
         }
 
 
-def load_pairs(path: str):
+def load_pairs(path):
     pairs = []
     with open(path) as f:
         for line in f:
@@ -68,14 +49,25 @@ def load_pairs(path: str):
 
 
 def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--fold", type=int, default=None)
+    parser.add_argument("--train_pairs", default="data/qa_gold/reranker_train_pairs.jsonl")
+    parser.add_argument("--out_dir", default="models/reranker_lora_adapter")
+    parser.add_argument("--epochs", type=int, default=15)
+    args = parser.parse_args()
+
+    if args.fold is not None:
+        train_pairs_path = f"data/qa_gold/reranker_fold{args.fold}_train_pairs.jsonl"
+        out_dir = f"models/reranker_lora_adapter_fold{args.fold}"
+    else:
+        train_pairs_path = args.train_pairs
+        out_dir = args.out_dir
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print(f"Device: {device}")
-    if device == "cpu":
-        print("WARNING: no GPU detected -- this will be very slow. "
-              "In Colab: Runtime > Change runtime type > GPU.")
 
-    print(f"\n=== Step 1: load training pairs from {TRAIN_PAIRS_PATH} ===")
-    pairs = load_pairs(TRAIN_PAIRS_PATH)
+    print(f"\n=== Step 1: load training pairs from {train_pairs_path} ===")
+    pairs = load_pairs(train_pairs_path)
     print(f"Loaded {len(pairs)} pairs.")
 
     print(f"\n=== Step 2: load base model + tokenizer ({BASE_MODEL}) ===")
@@ -84,9 +76,6 @@ def main():
     model.to(device)
 
     print("\n=== Step 3: apply LoRA adapter ===")
-    # target_modules=["query", "value"] matches the attention projection
-    # naming used by bge-reranker-base's underlying (RoBERTa-family)
-    # architecture -- the standard LoRA target for BERT/RoBERTa-style models.
     lora_config = LoraConfig(
         task_type=TaskType.SEQ_CLS,
         r=LORA_R,
@@ -97,19 +86,19 @@ def main():
     model = get_peft_model(model, lora_config)
     model.print_trainable_parameters()
 
-    print("\n=== Step 4: train ===")
+    print(f"\n=== Step 4: train ({args.epochs} epochs) ===")
     dataset = PairDataset(pairs, tokenizer)
     loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
 
     optimizer = torch.optim.AdamW(model.parameters(), lr=LEARNING_RATE)
-    total_steps = len(loader) * EPOCHS
+    total_steps = len(loader) * args.epochs
     scheduler = get_linear_schedule_with_warmup(
         optimizer, num_warmup_steps=int(0.1 * total_steps), num_training_steps=total_steps
     )
     loss_fn = torch.nn.BCEWithLogitsLoss()
 
     model.train()
-    for epoch in range(EPOCHS):
+    for epoch in range(args.epochs):
         epoch_loss = 0.0
         for batch in loader:
             input_ids = batch["input_ids"].to(device)
@@ -126,16 +115,14 @@ def main():
             scheduler.step()
             epoch_loss += loss.item()
 
-        print(f"  Epoch {epoch + 1}/{EPOCHS}: avg loss = {epoch_loss / len(loader):.4f}")
+        print(f"  Epoch {epoch + 1}/{args.epochs}: avg loss = {epoch_loss / len(loader):.4f}")
 
-    print(f"\n=== Step 5: save LoRA adapter to {ADAPTER_OUT_DIR} ===")
-    os.makedirs(ADAPTER_OUT_DIR, exist_ok=True)
-    model.save_pretrained(ADAPTER_OUT_DIR)
-    tokenizer.save_pretrained(ADAPTER_OUT_DIR)
-    print("Done. Adapter size:")
-    os.system(f"du -sh {ADAPTER_OUT_DIR}")
-    print("\nNext: copy this folder to the repo (or Drive), then run "
-          "scripts/evaluate_finetuned_reranker.py on the 15 held-out questions.")
+    print(f"\n=== Step 5: save LoRA adapter to {out_dir} ===")
+    os.makedirs(out_dir, exist_ok=True)
+    model.save_pretrained(out_dir)
+    tokenizer.save_pretrained(out_dir)
+    print("Done.")
+    os.system(f"du -sh {out_dir}")
 
 
 if __name__ == "__main__":
