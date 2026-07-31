@@ -144,6 +144,31 @@ off-the-shelf model, achieved by training only a ~20MB LoRA adapter (not a
 new full model) on 276 pairs derived from 45 questions per fold. Treated
 here as a partial-improvement result, not oversold as a clean win.
 
+## Agentic retry loop (LangGraph)
+
+Extended the pipeline with a LangGraph state machine: retrieve → generate → an LLM
+self-assesses whether the answer is sufficient → if not, issues a follow-up query and
+retrieves again (accumulating context across retries, capped at 2 retries) rather than
+answering from a single fixed retrieval pass. Targets exactly the failure mode a
+single-shot pipeline can't fix: questions where the first retrieval surfaces a
+plausible-looking page that turns out to be incomplete.
+
+| Condition | Accuracy (60 questions) |
+|---|---|
+| Baseline (single-shot) | 45.0% |
+| **Agentic (retry loop)** | **56.7%** |
+
+A clean result: retry triggered on 11/60 questions, of which **7 flipped from wrong to
+correct and 0 flipped from correct to wrong** — the mechanism only helps when the model
+itself judges the first pass insufficient, and doesn't introduce new failures elsewhere.
+See `src/generation/agentic_pipeline.py` and `scripts/evaluate_agentic_pipeline.py`.
+
+(Development note kept for transparency: an early version of this evaluation showed 0.0%
+agentic accuracy — extreme enough to be obviously a bug rather than a real finding. Root
+cause was a page-text lookup indexed incorrectly, silently returning empty context on every
+retrieval. Fixed by narrowing the lookup to the current document before passing it to
+`build_context`.)
+
 ## Prompt iteration log (generation stage)
 
 Four iterations, each isolating a specific failure mode rather than blindly re-prompting:
@@ -269,7 +294,8 @@ financial-rag-platform/
 │   │
 │   ├── generation/
 │   │   ├── prompts.py              # v2–v5 prompt history, not just the final one
-│   │   └── generate_answer.py      # + Python-eval calculator step, optional token-usage capture
+│   │   ├── generate_answer.py      # + Python-eval calculator step, optional token-usage capture
+│   │   └── agentic_pipeline.py     # LangGraph retry loop: retrieve -> generate -> assess -> retry
 │   │
 │   ├── evaluation/
 │   │   ├── retrieval_metrics.py    # hit@k, recall@k, candidate-ceiling analysis
@@ -291,7 +317,8 @@ financial-rag-platform/
 │   ├── track_generation_prompts_wandb.py  # log v2-v5 prompt comparison to Weights & Biases
 │   ├── build_reranker_training_data_kfold.py  # build 4-fold LoRA training pairs (hard negatives)
 │   ├── finetune_reranker_lora.py    # LoRA fine-tune of bge-reranker-base (needs GPU -- run in Colab)
-│   └── evaluate_finetuned_reranker_kfold.py  # 4-fold CV comparison: no-rerank vs off-the-shelf vs fine-tuned
+│   ├── evaluate_finetuned_reranker_kfold.py  # 4-fold CV comparison: no-rerank vs off-the-shelf vs fine-tuned
+│   └── evaluate_agentic_pipeline.py  # baseline vs LangGraph agentic retry loop comparison
 │
 ├── models/
 │   └── reranker_lora_adapter_fold{0-3}/  # small (~20MB each) LoRA adapters, one per CV fold
